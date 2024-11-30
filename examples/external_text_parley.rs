@@ -13,7 +13,7 @@ use femtovg::{
     Atlas, Canvas, Color, DrawCommand, GlyphDrawCommands, ImageFlags, ImageId, ImageSource, Paint, Path, Quad,
 };
 use helpers::WindowSurface;
-use imgref::{Img, ImgVec};
+use imgref::{Img, ImgRef};
 use parley::layout::{Alignment, Glyph, GlyphRun, Layout, PositionedLayoutItem};
 use parley::style::{FontStack, StyleProperty};
 use parley::{FontContext, FontWeight, InlineBox, LayoutContext};
@@ -270,11 +270,14 @@ fn render_glyph_run<W: WindowSurface>(
         let cache_key = RenderedGlyphId::new(glyph.id, font_ref.key, font_size, 0.0, offset);
 
         let Some(rendered) = cache.rendered_glyphs.entry(cache_key).or_insert_with(|| {
-            let (data, placement, is_color) = render_glyph(&mut scaler, glyph, offset);
+            let (content, placement, is_color) = render_glyph(&mut scaler, glyph, offset);
+
+            let content_w = placement.width as usize;
+            let content_h = placement.height as usize;
 
             let mut found = None;
             for (texture_index, glyph_atlas) in cache.glyph_textures.iter_mut().enumerate() {
-                if let Some((x, y)) = glyph_atlas.atlas.add_rect(data.width(), data.height()) {
+                if let Some((x, y)) = glyph_atlas.atlas.add_rect(content_w, content_h) {
                     found = Some((texture_index, x, y));
                     break;
                 }
@@ -296,7 +299,7 @@ fn render_glyph_run<W: WindowSurface>(
                     )
                     .unwrap();
                 let texture_index = cache.glyph_textures.len();
-                let (x, y) = atlas.add_rect(data.width(), data.height()).unwrap();
+                let (x, y) = atlas.add_rect(content_w, content_h).unwrap();
                 cache.glyph_textures.push(FontTexture { atlas, image_id });
                 (texture_index, x, y)
             });
@@ -304,7 +307,7 @@ fn render_glyph_run<W: WindowSurface>(
             canvas
                 .update_image::<ImageSource>(
                     cache.glyph_textures[texture_index].image_id,
-                    data.as_ref().into(),
+                    ImgRef::new(&content, content_w, content_h).into(),
                     atlas_alloc_x,
                     atlas_alloc_y,
                 )
@@ -361,7 +364,7 @@ fn render_glyph_run<W: WindowSurface>(
     );
 }
 
-fn render_glyph(scaler: &mut Scaler<'_>, glyph: Glyph, offset: Vector) -> (ImgVec<RGBA8>, zeno::Placement, bool) {
+fn render_glyph(scaler: &mut Scaler<'_>, glyph: Glyph, offset: Vector) -> (Vec<RGBA8>, zeno::Placement, bool) {
     // Render the glyph using swash
     let rendered_glyph = Render::new(
         // Select our source order
@@ -398,7 +401,7 @@ fn render_glyph(scaler: &mut Scaler<'_>, glyph: Glyph, offset: Vector) -> (ImgVe
     }
 
     (
-        ImgVec::new(src_buf, glyph_width, glyph_height),
+        src_buf,
         rendered_glyph.placement,
         matches!(rendered_glyph.content, Content::Color),
     )
