@@ -16,42 +16,34 @@ use helpers::WindowSurface;
 use imgref::{Img, ImgRef};
 use parley::layout::{Alignment, Glyph, GlyphRun, Layout, PositionedLayoutItem};
 use parley::style::{FontStack, StyleProperty};
-use parley::{FontContext, FontWeight, InlineBox, LayoutContext};
+use parley::{FontContext, LayoutContext};
 use rgb::RGBA8;
 use std::collections::HashMap;
 use std::sync::Arc;
 use swash::scale::image::Content;
 use swash::scale::{Render, ScaleContext, Scaler, Source, StrikeWith};
-use swash::zeno;
 use swash::FontRef;
+use swash::{zeno, GlyphId};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::window::Window;
 use zeno::{Format, Vector};
 
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
-pub struct RenderedGlyphId {
-    glyph: swash::GlyphId,
-    font_key: swash::CacheKey,
+pub struct GlyphCacheKey {
+    glyph_id: GlyphId,
+    font_index: u32,
     size: u32,
-    line_width: u32,
     subpixel_offset_x: u8,
     subpixel_offset_y: u8,
 }
 
-impl RenderedGlyphId {
-    fn new(
-        glyph: swash::GlyphId,
-        font_key: swash::CacheKey,
-        font_size: f32,
-        line_width: f32,
-        subpixel_offset: Vector,
-    ) -> Self {
+impl GlyphCacheKey {
+    fn new(glyph_id: GlyphId, font_index: u32, font_size: f32, subpixel_offset: Vector) -> Self {
         Self {
-            glyph,
-            font_key,
+            glyph_id,
+            font_index,
             size: (font_size * 10.0).trunc() as u32,
-            line_width: (line_width * 10.0).trunc() as u32,
             subpixel_offset_x: (subpixel_offset.x * 10.0).trunc() as u8,
             subpixel_offset_y: (subpixel_offset.y * 10.0).trunc() as u8,
         }
@@ -72,7 +64,7 @@ pub struct RenderedGlyph {
 
 #[derive(Default)]
 pub struct RenderCache {
-    rendered_glyphs: HashMap<RenderedGlyphId, Option<RenderedGlyph>>,
+    rendered_glyphs: HashMap<GlyphCacheKey, Option<RenderedGlyph>>,
     glyph_textures: Vec<FontTexture>,
 }
 
@@ -85,15 +77,10 @@ pub struct FontTexture {
 
 fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut surface: W, window: Arc<Window>) {
     // The text we are going to style and lay out
-    let text = String::from(
-        "Some text here. Let's make it a bit longer so that line wrapping kicks in 😊. And also some اللغة العربية arabic text.\nThis is underline and strikethrough text AAA",
-    );
+    let text = String::from(LOREM_TEXT);
 
     // The display scale for HiDPI rendering
     let display_scale = 1.0;
-
-    // The width for line wrapping
-    let max_advance = Some(200.0 * display_scale);
 
     // Colours for rendering
     let text_color = Color::rgb(0, 0, 0);
@@ -112,9 +99,6 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
     // Setup some Parley text styles
     let brush_style = StyleProperty::Brush(text_color);
     let font_stack = FontStack::from("system-ui");
-    let bold_style = StyleProperty::FontWeight(FontWeight::new(600.0));
-    let underline_style = StyleProperty::Underline(true);
-    let strikethrough_style = StyleProperty::Strikethrough(true);
 
     // Creatse a RangedBuilder
     let mut builder = layout_cx.ranged_builder(&mut font_cx, &text, display_scale);
@@ -127,33 +111,9 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
     builder.push_default(StyleProperty::LineHeight(1.3));
     builder.push_default(StyleProperty::FontSize(16.0));
 
-    // Set the first 4 characters to bold
-    builder.push(bold_style, 0..4);
-
-    // Set the underline & stoked style
-    builder.push(underline_style, 141..150);
-    builder.push(strikethrough_style, 155..168);
-
-    builder.push_inline_box(InlineBox {
-        id: 0,
-        index: 40,
-        width: 50.0,
-        height: 50.0,
-    });
-    builder.push_inline_box(InlineBox {
-        id: 1,
-        index: 50,
-        width: 50.0,
-        height: 30.0,
-    });
-
     // Build the builder into a Layout
     // let mut layout: Layout<Color> = builder.build(&text);
     let mut layout: Layout<Color> = builder.build(&text);
-
-    // Perform layout (including bidi resolution and shaping) with start alignment
-    layout.break_all_lines(max_advance);
-    layout.align(max_advance, Alignment::Start);
 
     let mut render_cache = RenderCache::default();
 
@@ -169,10 +129,15 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
                 }
                 WindowEvent::CloseRequested => event_loop_window_target.exit(),
                 WindowEvent::RedrawRequested { .. } => {
-                    let dpi_factor = window.scale_factor() as f32;
                     let size = window.inner_size();
                     canvas.set_size(size.width, size.height, 1.0);
                     canvas.clear_rect(0, 0, size.width, size.height, Color::rgbf(0.9, 0.9, 0.9));
+
+                    let max_advance = Some(size.width as f32 - padding as f32 * 2.0);
+
+                    // Perform layout (including bidi resolution and shaping) with start alignment
+                    layout.break_all_lines(max_advance);
+                    layout.align(max_advance, Alignment::Start);
 
                     // Iterate over laid out lines
                     for line in layout.lines() {
@@ -267,7 +232,7 @@ fn render_glyph_run<W: WindowSurface>(
         // You'll likely want to quantize this in a real renderer
         let offset = Vector::new(glyph_x.fract(), glyph_y.fract());
 
-        let cache_key = RenderedGlyphId::new(glyph.id, font_ref.key, font_size, 0.0, offset);
+        let cache_key = GlyphCacheKey::new(glyph.id, font.index, font_size, offset);
 
         let Some(rendered) = cache.rendered_glyphs.entry(cache_key).or_insert_with(|| {
             let (content, placement, is_color) = render_glyph(&mut scaler, glyph, offset);
@@ -406,3 +371,22 @@ fn render_glyph(scaler: &mut Scaler<'_>, glyph: Glyph, offset: Vector) -> (Vec<R
         matches!(rendered_glyph.content, Content::Color),
     )
 }
+
+const LOREM_TEXT: &str = r"
+Traditionally, text is composed to create a readable, coherent, and visually satisfying typeface
+that works invisibly, without the awareness of the reader. Even distribution of typeset material,
+with a minimum of distractions and anomalies, is aimed at producing clarity and transparency.
+Choice of typeface(s) is the primary aspect of text typography—prose fiction, non-fiction,
+editorial, educational, religious, scientific, spiritual, and commercial writing all have differing
+characteristics and requirements of appropriate typefaces and their fonts or styles.
+
+مرئية وساهلة قراءة وجاذبة. ترتيب الحوف يشمل كل من اختيار عائلة الخط وحجم وطول الخط والمسافة بين السطور
+
+مرئية وساهلة قراءة وجاذبة. ترتيب الحوف يشمل كل من اختيار (asdasdasdasdasdasd) عائلة الخط وحجم وطول الخط والمسافة بين السطور
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur in nisi at ligula lobortis pretium. Sed vel eros tincidunt, fermentum metus sit amet, accumsan massa. Vestibulum sed elit et purus suscipit
+Sed at gravida lectus. Duis eu nisl non sem lobortis rutrum. Sed non mauris urna. Pellentesque suscipit nec odio eu varius. Quisque lobortis elit in finibus vulputate. Mauris quis gravida libero.
+Etiam non malesuada felis, nec fringilla quam.
+
+😂🤩🥰😊😄
+";
