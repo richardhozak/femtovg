@@ -9,24 +9,16 @@
 
 mod helpers;
 
-use femtovg::renderer::OpenGl;
 use femtovg::{
     Atlas, Canvas, Color, DrawCommand, GlyphDrawCommands, ImageFlags, ImageId, ImageSource, Paint, Path, Quad,
 };
 use helpers::WindowSurface;
-use image::codecs::png::PngEncoder;
-use image::{self, Pixel, Rgba, RgbaImage};
 use imgref::{Img, ImgVec};
 use parley::layout::{Alignment, Glyph, GlyphRun, Layout, PositionedLayoutItem};
-use parley::style::{FontStack, FontWeight, StyleProperty, TextStyle};
-use parley::{FontContext, InlineBox, LayoutContext};
+use parley::style::{FontStack, StyleProperty};
+use parley::{FontContext, FontWeight, InlineBox, LayoutContext};
 use rgb::RGBA8;
-use skrifa::outline::{DrawSettings, OutlinePen};
-use skrifa::prelude::{LocationRef, NormalizedCoord, Size};
-use skrifa::raw::FontRef as ReadFontsRef;
-use skrifa::{MetadataProvider, OutlineGlyph};
 use std::collections::HashMap;
-use std::fs::File;
 use std::sync::Arc;
 use swash::scale::image::Content;
 use swash::scale::{Render, ScaleContext, Scaler, Source, StrikeWith};
@@ -105,7 +97,6 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
 
     // Colours for rendering
     let text_color = Color::rgb(0, 0, 0);
-    let bg_color = Rgba([255, 255, 255, 255]);
 
     // Padding around the output image
     let padding = 20;
@@ -164,31 +155,7 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
     layout.break_all_lines(max_advance);
     layout.align(max_advance, Alignment::Start);
 
-    // // Create image to render into
-    // let width = layout.width().ceil() as u32 + (padding * 2);
-    // let height = layout.height().ceil() as u32 + (padding * 2);
-    // let mut img = RgbaImage::from_pixel(width, height, bg_color);
-
-    // // Write image to PNG file in examples/_output dir
-    // let output_path = {
-    //     let path = std::path::PathBuf::from(file!());
-    //     let mut path = std::fs::canonicalize(path).unwrap();
-    //     path.pop();
-    //     path.pop();
-    //     path.pop();
-    //     path.push("_output");
-    //     drop(std::fs::create_dir(path.clone()));
-    //     path.push("swash_render.png");
-    //     path
-    // };
-    // println!("{}", output_path.display());
-    // let output_file = File::create(output_path).unwrap();
-    // let png_encoder = PngEncoder::new(output_file);
-    // img.write_with_encoder(png_encoder).unwrap();
-
     let mut render_cache = RenderCache::default();
-
-    let mut pen = PathPen::new();
 
     el.run(move |event, event_loop_window_target| {
         event_loop_window_target.set_control_flow(winit::event_loop::ControlFlow::Poll);
@@ -220,7 +187,6 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
                                         &mut canvas,
                                         padding,
                                     );
-                                    // render_glyph_run_outlined::<W>(&glyph_run, &mut pen, &mut canvas, padding);
                                 }
                                 PositionedLayoutItem::InlineBox(inline_box) => {
                                     let mut path = Path::new();
@@ -253,51 +219,6 @@ fn main() {
     helpers::start(1000, 600, "Text demo", true);
     #[cfg(target_arch = "wasm32")]
     helpers::start();
-}
-
-fn render_glyph_run_outlined<W: WindowSurface>(
-    glyph_run: &GlyphRun<'_, Color>,
-    pen: &mut PathPen,
-    canvas: &mut Canvas<W::Renderer>,
-    padding: u32,
-) {
-    // Resolve properties of the GlyphRun
-    let mut run_x = glyph_run.offset();
-    let run_y = glyph_run.baseline();
-    let style = glyph_run.style();
-    let color = style.brush;
-
-    // Get the "Run" from the "GlyphRun"
-    let run = glyph_run.run();
-
-    // Resolve properties of the Run
-    let font = run.font();
-    let font_size = run.font_size();
-
-    let normalized_coords = run
-        .normalized_coords()
-        .iter()
-        .map(|coord| NormalizedCoord::from_bits(*coord))
-        .collect::<Vec<_>>();
-
-    // Get glyph outlines using Skrifa. This can be cached in production code.
-    let font_collection_ref = font.data.as_ref();
-    let font_ref = ReadFontsRef::from_index(font_collection_ref, font.index).unwrap();
-    let outlines = font_ref.outline_glyphs();
-
-    // Iterates over the glyphs in the GlyphRun
-    for glyph in glyph_run.glyphs() {
-        let glyph_x = run_x + glyph.x + padding as f32;
-        let glyph_y = run_y - glyph.y + padding as f32;
-        run_x += glyph.advance;
-
-        let glyph_id = skrifa::GlyphId::from(glyph.id);
-        if let Some(glyph_outline) = outlines.get(glyph_id) {
-            pen.set_origin(glyph_x, glyph_y);
-            pen.set_color(color);
-            pen.draw_glyph::<W>(&glyph_outline, font_size, &normalized_coords, canvas);
-        }
-    }
 }
 
 fn render_glyph_run<W: WindowSurface>(
@@ -341,8 +262,6 @@ fn render_glyph_run<W: WindowSurface>(
         let glyph_x = run_x + glyph.x + (padding as f32);
         let glyph_y = run_y - glyph.y + (padding as f32);
         run_x += glyph.advance;
-
-        println!("run x {}", run_x);
 
         // Compute the fractional offset
         // You'll likely want to quantize this in a real renderer
@@ -483,82 +402,4 @@ fn render_glyph(scaler: &mut Scaler<'_>, glyph: Glyph, offset: Vector) -> (ImgVe
         rendered_glyph.placement,
         matches!(rendered_glyph.content, Content::Color),
     )
-}
-
-struct PathPen {
-    path: Path,
-    x: f32,
-    y: f32,
-    color: Color,
-}
-
-impl PathPen {
-    fn new() -> PathPen {
-        PathPen {
-            path: Path::new(),
-            x: 0.0,
-            y: 0.0,
-            color: Color::black(),
-        }
-    }
-
-    fn set_origin(&mut self, x: f32, y: f32) {
-        self.x = x;
-        self.y = y;
-    }
-
-    fn set_color(&mut self, color: Color) {
-        self.color = color;
-    }
-
-    fn fill_rect<W: WindowSurface>(&mut self, width: f32, height: f32, canvas: &mut Canvas<W::Renderer>) {
-        let mut path = Path::new();
-        path.rect(self.x, self.y, width, height);
-        canvas.fill_path(&path, &Paint::color(self.color));
-    }
-
-    fn draw_glyph<W: WindowSurface>(
-        &mut self,
-        glyph: &OutlineGlyph<'_>,
-        size: f32,
-        normalized_coords: &[NormalizedCoord],
-        canvas: &mut Canvas<W::Renderer>,
-    ) {
-        let location_ref = LocationRef::new(normalized_coords);
-        let settings = DrawSettings::unhinted(Size::new(size), location_ref);
-        glyph.draw(settings, self).unwrap();
-
-        let path = core::mem::replace(&mut self.path, Path::new());
-        canvas.fill_path(&path, &Paint::color(self.color));
-        canvas.stroke_path(&path, &Paint::color(Color::rgbaf(1.0, 1.0, 1.0, 0.5)));
-    }
-}
-
-impl OutlinePen for PathPen {
-    fn move_to(&mut self, x: f32, y: f32) {
-        self.path.move_to(self.x + x, self.y - y);
-    }
-
-    fn line_to(&mut self, x: f32, y: f32) {
-        self.path.line_to(self.x + x, self.y - y);
-    }
-
-    fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
-        self.path.quad_to(self.x + cx0, self.y - cy0, self.x + x, self.y - y);
-    }
-
-    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
-        self.path.bezier_to(
-            self.x + cx0,
-            self.y - cy0,
-            self.x + cx1,
-            self.y - cy1,
-            self.x + x,
-            self.y - y,
-        );
-    }
-
-    fn close(&mut self) {
-        self.path.close();
-    }
 }
