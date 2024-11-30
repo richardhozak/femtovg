@@ -10,17 +10,22 @@
 mod helpers;
 
 use femtovg::renderer::OpenGl;
-use femtovg::{Canvas, Color, Paint, Path};
+use femtovg::{
+    Atlas, Canvas, Color, DrawCommand, GlyphDrawCommands, ImageFlags, ImageId, ImageSource, Paint, Path, Quad,
+};
 use helpers::WindowSurface;
 use image::codecs::png::PngEncoder;
 use image::{self, Pixel, Rgba, RgbaImage};
+use imgref::{Img, ImgVec};
 use parley::layout::{Alignment, Glyph, GlyphRun, Layout, PositionedLayoutItem};
 use parley::style::{FontStack, FontWeight, StyleProperty, TextStyle};
 use parley::{FontContext, InlineBox, LayoutContext};
+use rgb::RGBA8;
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::prelude::{LocationRef, NormalizedCoord, Size};
 use skrifa::raw::FontRef as ReadFontsRef;
-use skrifa::{GlyphId, MetadataProvider, OutlineGlyph};
+use skrifa::{MetadataProvider, OutlineGlyph};
+use std::collections::HashMap;
 use std::fs::File;
 use std::sync::Arc;
 use swash::scale::image::Content;
@@ -32,10 +37,64 @@ use winit::event_loop::EventLoop;
 use winit::window::Window;
 use zeno::{Format, Vector};
 
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+pub struct RenderedGlyphId {
+    glyph: swash::GlyphId,
+    font_key: swash::CacheKey,
+    size: u32,
+    line_width: u32,
+    subpixel_offset_x: u8,
+    subpixel_offset_y: u8,
+}
+
+impl RenderedGlyphId {
+    fn new(
+        glyph: swash::GlyphId,
+        font_key: swash::CacheKey,
+        font_size: f32,
+        line_width: f32,
+        subpixel_offset: Vector,
+    ) -> Self {
+        Self {
+            glyph,
+            font_key,
+            size: (font_size * 10.0).trunc() as u32,
+            line_width: (line_width * 10.0).trunc() as u32,
+            subpixel_offset_x: (subpixel_offset.x * 10.0).trunc() as u8,
+            subpixel_offset_y: (subpixel_offset.y * 10.0).trunc() as u8,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct RenderedGlyph {
+    texture_index: usize,
+    width: u32,
+    height: u32,
+    offset_x: i32,
+    offset_y: i32,
+    atlas_x: u32,
+    atlas_y: u32,
+    color_glyph: bool,
+}
+
+#[derive(Default)]
+pub struct RenderCache {
+    rendered_glyphs: HashMap<RenderedGlyphId, Option<RenderedGlyph>>,
+    glyph_textures: Vec<FontTexture>,
+}
+
+const TEXTURE_SIZE: usize = 512;
+
+pub struct FontTexture {
+    atlas: Atlas,
+    image_id: ImageId,
+}
+
 fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut surface: W, window: Arc<Window>) {
     // The text we are going to style and lay out
     let text = String::from(
-        "Some text here. Let's make it a bit longer so that line wrapping kicks in 😊. And also some اللغة العربية arabic text.\nThis is underline and strikethrough text",
+        "Some text here. Let's make it a bit longer so that line wrapping kicks in 😊. And also some اللغة العربية arabic text.\nThis is underline and strikethrough text AAA",
     );
 
     // The display scale for HiDPI rendering
@@ -105,27 +164,29 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
     layout.break_all_lines(max_advance);
     layout.align(max_advance, Alignment::Start);
 
-    // Create image to render into
-    let width = layout.width().ceil() as u32 + (padding * 2);
-    let height = layout.height().ceil() as u32 + (padding * 2);
-    let mut img = RgbaImage::from_pixel(width, height, bg_color);
+    // // Create image to render into
+    // let width = layout.width().ceil() as u32 + (padding * 2);
+    // let height = layout.height().ceil() as u32 + (padding * 2);
+    // let mut img = RgbaImage::from_pixel(width, height, bg_color);
 
-    // Write image to PNG file in examples/_output dir
-    let output_path = {
-        let path = std::path::PathBuf::from(file!());
-        let mut path = std::fs::canonicalize(path).unwrap();
-        path.pop();
-        path.pop();
-        path.pop();
-        path.push("_output");
-        drop(std::fs::create_dir(path.clone()));
-        path.push("swash_render.png");
-        path
-    };
-    println!("{}", output_path.display());
-    let output_file = File::create(output_path).unwrap();
-    let png_encoder = PngEncoder::new(output_file);
-    img.write_with_encoder(png_encoder).unwrap();
+    // // Write image to PNG file in examples/_output dir
+    // let output_path = {
+    //     let path = std::path::PathBuf::from(file!());
+    //     let mut path = std::fs::canonicalize(path).unwrap();
+    //     path.pop();
+    //     path.pop();
+    //     path.pop();
+    //     path.push("_output");
+    //     drop(std::fs::create_dir(path.clone()));
+    //     path.push("swash_render.png");
+    //     path
+    // };
+    // println!("{}", output_path.display());
+    // let output_file = File::create(output_path).unwrap();
+    // let png_encoder = PngEncoder::new(output_file);
+    // img.write_with_encoder(png_encoder).unwrap();
+
+    let mut render_cache = RenderCache::default();
 
     let mut pen = PathPen::new();
 
@@ -152,8 +213,14 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
                         for item in line.items() {
                             match item {
                                 PositionedLayoutItem::GlyphRun(glyph_run) => {
-                                    // render_glyph_run::<W>(&mut scale_cx, &glyph_run, &mut canvas, padding);
-                                    render_glyph_run_outlined::<W>(&glyph_run, &mut pen, &mut canvas, padding);
+                                    render_glyph_run::<W>(
+                                        &mut scale_cx,
+                                        &mut render_cache,
+                                        &glyph_run,
+                                        &mut canvas,
+                                        padding,
+                                    );
+                                    // render_glyph_run_outlined::<W>(&glyph_run, &mut pen, &mut canvas, padding);
                                 }
                                 PositionedLayoutItem::InlineBox(inline_box) => {
                                     let mut path = Path::new();
@@ -224,7 +291,7 @@ fn render_glyph_run_outlined<W: WindowSurface>(
         let glyph_y = run_y - glyph.y + padding as f32;
         run_x += glyph.advance;
 
-        let glyph_id = GlyphId::from(glyph.id);
+        let glyph_id = skrifa::GlyphId::from(glyph.id);
         if let Some(glyph_outline) = outlines.get(glyph_id) {
             pen.set_origin(glyph_x, glyph_y);
             pen.set_color(color);
@@ -235,10 +302,14 @@ fn render_glyph_run_outlined<W: WindowSurface>(
 
 fn render_glyph_run<W: WindowSurface>(
     context: &mut ScaleContext,
+    cache: &mut RenderCache,
     glyph_run: &GlyphRun<'_, Color>,
     canvas: &mut Canvas<W::Renderer>,
     padding: u32,
 ) {
+    let mut alpha_cmd_map = HashMap::new();
+    let mut color_cmd_map = HashMap::new();
+
     // Resolve properties of the GlyphRun
     let mut run_x = glyph_run.offset();
     let run_y = glyph_run.baseline();
@@ -271,22 +342,107 @@ fn render_glyph_run<W: WindowSurface>(
         let glyph_y = run_y - glyph.y + (padding as f32);
         run_x += glyph.advance;
 
-        render_glyph::<W>(canvas, &mut scaler, color, glyph, glyph_x, glyph_y);
+        println!("run x {}", run_x);
+
+        // Compute the fractional offset
+        // You'll likely want to quantize this in a real renderer
+        let offset = Vector::new(glyph_x.fract(), glyph_y.fract());
+
+        let cache_key = RenderedGlyphId::new(glyph.id, font_ref.key, font_size, 0.0, offset);
+
+        let Some(rendered) = cache.rendered_glyphs.entry(cache_key).or_insert_with(|| {
+            let (data, placement, is_color) = render_glyph(&mut scaler, glyph, offset);
+
+            let mut found = None;
+            for (texture_index, glyph_atlas) in cache.glyph_textures.iter_mut().enumerate() {
+                if let Some((x, y)) = glyph_atlas.atlas.add_rect(data.width(), data.height()) {
+                    found = Some((texture_index, x, y));
+                    break;
+                }
+            }
+
+            let (texture_index, atlas_alloc_x, atlas_alloc_y) = found.unwrap_or_else(|| {
+                // if no atlas could fit the texture, make a new atlas tyvm
+                // TODO error handling
+                let mut atlas = Atlas::new(TEXTURE_SIZE, TEXTURE_SIZE);
+                let image_id = canvas
+                    .create_image(
+                        Img::new(
+                            vec![RGBA8::new(0, 0, 0, 0); TEXTURE_SIZE * TEXTURE_SIZE],
+                            TEXTURE_SIZE,
+                            TEXTURE_SIZE,
+                        )
+                        .as_ref(),
+                        ImageFlags::NEAREST,
+                    )
+                    .unwrap();
+                let texture_index = cache.glyph_textures.len();
+                let (x, y) = atlas.add_rect(data.width(), data.height()).unwrap();
+                cache.glyph_textures.push(FontTexture { atlas, image_id });
+                (texture_index, x, y)
+            });
+
+            canvas
+                .update_image::<ImageSource>(
+                    cache.glyph_textures[texture_index].image_id,
+                    data.as_ref().into(),
+                    atlas_alloc_x,
+                    atlas_alloc_y,
+                )
+                .unwrap();
+
+            Some(RenderedGlyph {
+                texture_index,
+                width: placement.width,
+                height: placement.height,
+                offset_x: placement.left,
+                offset_y: placement.top,
+                atlas_x: atlas_alloc_x as u32,
+                atlas_y: atlas_alloc_y as u32,
+                color_glyph: is_color,
+            })
+        }) else {
+            continue;
+        };
+
+        let cmd_map = if rendered.color_glyph {
+            &mut color_cmd_map
+        } else {
+            &mut alpha_cmd_map
+        };
+
+        let cmd = cmd_map.entry(rendered.texture_index).or_insert_with(|| DrawCommand {
+            image_id: cache.glyph_textures[rendered.texture_index].image_id,
+            quads: Vec::new(),
+        });
+
+        let mut q = Quad::default();
+        let it = 1.0 / TEXTURE_SIZE as f32;
+
+        q.x0 = glyph_x + rendered.offset_x as f32 - offset.x;
+        q.y0 = glyph_y - rendered.offset_y as f32 - offset.y;
+        q.x1 = q.x0 + rendered.width as f32;
+        q.y1 = q.y0 + rendered.height as f32;
+
+        q.s0 = rendered.atlas_x as f32 * it;
+        q.t0 = rendered.atlas_y as f32 * it;
+        q.s1 = (rendered.atlas_x + rendered.width) as f32 * it;
+        q.t1 = (rendered.atlas_y + rendered.height) as f32 * it;
+
+        cmd.quads.push(q);
     }
+
+    canvas.draw_glyph_commands(
+        GlyphDrawCommands {
+            alpha_glyphs: alpha_cmd_map.into_values().collect(),
+            color_glyphs: color_cmd_map.into_values().collect(),
+        },
+        &Paint::color(color),
+        1.0,
+    );
 }
 
-fn render_glyph<W: WindowSurface>(
-    canvas: &mut Canvas<W::Renderer>,
-    scaler: &mut Scaler<'_>,
-    color: Color,
-    glyph: Glyph,
-    glyph_x: f32,
-    glyph_y: f32,
-) {
-    // Compute the fractional offset
-    // You'll likely want to quantize this in a real renderer
-    let offset = Vector::new(glyph_x.fract(), glyph_y.fract());
-
+fn render_glyph(scaler: &mut Scaler<'_>, glyph: Glyph, offset: Vector) -> (ImgVec<RGBA8>, zeno::Placement, bool) {
     // Render the glyph using swash
     let rendered_glyph = Render::new(
         // Select our source order
@@ -304,43 +460,29 @@ fn render_glyph<W: WindowSurface>(
     .render(scaler, glyph.id)
     .unwrap();
 
-    let glyph_width = rendered_glyph.placement.width;
-    let glyph_height = rendered_glyph.placement.height;
-    let glyph_x = (glyph_x.floor() as i32 + rendered_glyph.placement.left) as u32;
-    let glyph_y = (glyph_y.floor() as i32 - rendered_glyph.placement.top) as u32;
+    let glyph_width = rendered_glyph.placement.width as usize;
+    let glyph_height = rendered_glyph.placement.height as usize;
 
+    let mut src_buf = Vec::with_capacity(glyph_width * glyph_height);
     match rendered_glyph.content {
         Content::Mask => {
-            let mut i = 0;
-            for pixel_y in 0..glyph_height {
-                for pixel_x in 0..glyph_width {
-                    let x = glyph_x + pixel_x;
-                    let y = glyph_y + pixel_y;
-                    let alpha = rendered_glyph.data[i];
-                    let color = Rgba([
-                        (color.r * 255.0) as u8,
-                        (color.g * 255.0) as u8,
-                        (color.b * 255.0) as u8,
-                        alpha,
-                    ]);
-                    // img.get_pixel_mut(x, y).blend(&color);
-                    i += 1;
-                }
+            for chunk in rendered_glyph.data.chunks_exact(1) {
+                src_buf.push(RGBA8::new(chunk[0], 0, 0, 0));
             }
         }
-        Content::SubpixelMask => unimplemented!(),
         Content::Color => {
-            let row_size = glyph_width as usize * 4;
-            for (pixel_y, row) in rendered_glyph.data.chunks_exact(row_size).enumerate() {
-                for (pixel_x, pixel) in row.chunks_exact(4).enumerate() {
-                    let x = glyph_x + pixel_x as u32;
-                    let y = glyph_y + pixel_y as u32;
-                    let color = Rgba(pixel.try_into().expect("Not RGBA"));
-                    // img.get_pixel_mut(x, y).blend(&color);
-                }
+            for chunk in rendered_glyph.data.chunks_exact(4) {
+                src_buf.push(RGBA8::new(chunk[0], chunk[1], chunk[2], chunk[3]));
             }
         }
-    };
+        Content::SubpixelMask => unreachable!(),
+    }
+
+    (
+        ImgVec::new(src_buf, glyph_width, glyph_height),
+        rendered_glyph.placement,
+        matches!(rendered_glyph.content, Content::Color),
+    )
 }
 
 struct PathPen {
