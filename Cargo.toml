@@ -68,12 +68,12 @@ swash = "0.1.19"
 lazy_static = "1.4.0"
 spin_on = "0.1"
 wgpu = { version = "23" }
-parley = { git = "https://github.com/linebender/parley", rev = "17ac2ae3181b2dfd9584e94d086a9106fd036a4d" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 glutin = "0.31.0"
 glutin-winit = "0.4.0"
 raw-window-handle = "0.5.0"
+parley = { git = "https://github.com/linebender/parley", rev = "17ac2ae3181b2dfd9584e94d086a9106fd036a4d" }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 web_sys = { version = "0.3", package = "web-sys", features = [
