@@ -10,23 +10,26 @@
 mod helpers;
 
 use femtovg::{
-    Atlas, Canvas, Color, DrawCommand, GlyphDrawCommands, ImageFlags, ImageId, ImageSource, Paint, Path, Quad,
+    Atlas, Canvas, Color, DrawCommand, GlyphDrawCommands, ImageFlags, ImageId, ImageSource, Paint, Path, Quad, Renderer,
 };
 use helpers::WindowSurface;
 use imgref::{Img, ImgRef};
-use parley::layout::{Alignment, Glyph, GlyphRun, Layout, PositionedLayoutItem};
-use parley::style::{FontStack, StyleProperty};
-use parley::{FontContext, LayoutContext};
+use parley::{
+    layout::{Alignment, Glyph, GlyphRun, Layout, PositionedLayoutItem},
+    style::{FontStack, StyleProperty},
+    FontContext, LayoutContext,
+};
 use rgb::RGBA8;
-use std::collections::HashMap;
-use std::sync::Arc;
-use swash::scale::image::Content;
-use swash::scale::{Render, ScaleContext, Scaler, Source, StrikeWith};
-use swash::FontRef;
-use swash::{zeno, GlyphId};
-use winit::event::{Event, WindowEvent};
-use winit::event_loop::EventLoop;
-use winit::window::Window;
+use std::{collections::HashMap, sync::Arc};
+use swash::{
+    scale::{image::Content, Render, ScaleContext, Scaler, Source, StrikeWith},
+    zeno, FontRef, GlyphId,
+};
+use winit::{
+    event::{Event, WindowEvent},
+    event_loop::EventLoop,
+    window::Window,
+};
 use zeno::{Format, Vector};
 
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
@@ -85,9 +88,6 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
     // Colours for rendering
     let text_color = Color::rgb(0, 0, 0);
 
-    // Padding around the output image
-    let padding = 20;
-
     // Create a FontContext, LayoutContext and ScaleContext
     //
     // These are all intended to be constructed rarely (perhaps even once per app (or once per thread))
@@ -133,7 +133,7 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
                     canvas.set_size(size.width, size.height, 1.0);
                     canvas.clear_rect(0, 0, size.width, size.height, Color::rgbf(0.9, 0.9, 0.9));
 
-                    let max_advance = Some(size.width as f32 - padding as f32 * 2.0);
+                    let max_advance = Some(size.width as f32);
 
                     // Perform layout (including bidi resolution and shaping) with start alignment
                     layout.break_all_lines(max_advance);
@@ -145,22 +145,11 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
                         for item in line.items() {
                             match item {
                                 PositionedLayoutItem::GlyphRun(glyph_run) => {
-                                    render_glyph_run::<W>(
-                                        &mut scale_cx,
-                                        &mut render_cache,
-                                        &glyph_run,
-                                        &mut canvas,
-                                        padding,
-                                    );
+                                    render_glyph_run(&mut scale_cx, &mut render_cache, &glyph_run, &mut canvas);
                                 }
                                 PositionedLayoutItem::InlineBox(inline_box) => {
                                     let mut path = Path::new();
-                                    path.rect(
-                                        inline_box.x + padding as f32,
-                                        inline_box.y + padding as f32,
-                                        inline_box.width,
-                                        inline_box.height,
-                                    );
+                                    path.rect(inline_box.x, inline_box.y, inline_box.width, inline_box.height);
                                     canvas.fill_path(&path, &Paint::color(Color::rgba(0, 0, 0, 255)));
                                 }
                             };
@@ -186,12 +175,11 @@ fn main() {
     helpers::start();
 }
 
-fn render_glyph_run<W: WindowSurface>(
+fn render_glyph_run<T: Renderer>(
     context: &mut ScaleContext,
     cache: &mut RenderCache,
     glyph_run: &GlyphRun<'_, Color>,
-    canvas: &mut Canvas<W::Renderer>,
-    padding: u32,
+    canvas: &mut Canvas<T>,
 ) {
     let mut alpha_cmd_map = HashMap::new();
     let mut color_cmd_map = HashMap::new();
@@ -224,8 +212,8 @@ fn render_glyph_run<W: WindowSurface>(
 
     // Iterates over the glyphs in the GlyphRun
     for glyph in glyph_run.glyphs() {
-        let glyph_x = run_x + glyph.x + (padding as f32);
-        let glyph_y = run_y - glyph.y + (padding as f32);
+        let glyph_x = run_x + glyph.x;
+        let glyph_y = run_y - glyph.y;
         run_x += glyph.advance;
 
         // Compute the fractional offset
