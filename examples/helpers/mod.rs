@@ -1,7 +1,9 @@
 use super::run;
 
 mod perf_graph;
+mod text_canvas;
 pub use perf_graph::PerfGraph;
+pub use text_canvas::TextCanvas;
 
 pub trait WindowSurface {
     type Renderer: femtovg::Renderer + 'static;

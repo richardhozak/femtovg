@@ -14,8 +14,8 @@ use winit::{
 };
 
 mod helpers;
-use helpers::PerfGraph;
 use helpers::WindowSurface;
+use helpers::{PerfGraph, TextCanvas};
 
 fn main() {
     #[cfg(not(target_arch = "wasm32"))]
@@ -35,6 +35,8 @@ struct Fonts {
 }
 
 fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut surface: W, window: Arc<Window>) {
+    let mut text_canvas = TextCanvas::new();
+
     let fonts = Fonts {
         regular: canvas
             .add_font_mem(&resource!("examples/assets/Roboto-Regular.ttf"))
@@ -194,6 +196,7 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
 
                     draw_paragraph(
                         &mut canvas,
+                        &mut text_canvas,
                         fonts.regular,
                         width - 450.0,
                         50.0,
@@ -306,6 +309,7 @@ fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut
 
 fn draw_paragraph<T: Renderer>(
     canvas: &mut Canvas<T>,
+    text_canvas: &mut TextCanvas,
     font: FontId,
     x: f32,
     y: f32,
@@ -325,6 +329,11 @@ fn draw_paragraph<T: Renderer>(
         .with_font(&[font])
         .with_text_align(Align::Left)
         .with_text_baseline(Baseline::Top);
+
+    text_canvas.fill_text(canvas, x, y, text, &paint, Some(width));
+
+    canvas.restore();
+    return;
 
     let mut gutter_y = 0.0;
     let mut gutter = 0;

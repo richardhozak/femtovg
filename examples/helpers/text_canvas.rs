@@ -8,14 +8,12 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::shadow_unrelated)]
 
-mod helpers;
-
+use crate::helpers::WindowSurface;
 use femtovg::{
     Atlas, Canvas, Color, DrawCommand, GlyphDrawCommands, ImageFlags, ImageId, ImageSource, Paint, Path, Quad,
     Renderer, TextMetrics,
 };
 use fnv::{FnvBuildHasher, FnvHasher};
-use helpers::WindowSurface;
 use imgref::{Img, ImgRef};
 use lru::LruCache;
 use parley::{
@@ -111,7 +109,7 @@ impl ShapingId {
 
 type LayoutCache<'a, H> = LruCache<&'a str, Layout<Color>, H>;
 
-struct TextCanvas<'a> {
+pub struct TextCanvas<'a> {
     font_cx: FontContext,
     layout_cx: LayoutContext<Color>,
     layout_cache: LayoutCache<'a, FnvBuildHasher>,
@@ -120,7 +118,7 @@ struct TextCanvas<'a> {
 }
 
 impl<'a> TextCanvas<'a> {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             font_cx: FontContext::new(),
             layout_cx: LayoutContext::new(),
@@ -130,7 +128,7 @@ impl<'a> TextCanvas<'a> {
         }
     }
 
-    fn fill_text<T: Renderer>(
+    pub fn fill_text<T: Renderer>(
         &mut self,
         canvas: &mut Canvas<T>,
         x: f32,
@@ -196,64 +194,6 @@ impl<'a> TextCanvas<'a> {
 
         (layout.width(), layout.height())
     }
-}
-
-fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut surface: W, window: Arc<Window>) {
-    let mut text_canvas = TextCanvas::new();
-
-    el.run(move |event, event_loop_window_target| {
-        event_loop_window_target.set_control_flow(winit::event_loop::ControlFlow::Poll);
-
-        match event {
-            Event::LoopExiting => event_loop_window_target.exit(),
-            Event::WindowEvent { ref event, .. } => match event {
-                #[cfg(not(target_arch = "wasm32"))]
-                WindowEvent::Resized(physical_size) => {
-                    surface.resize(physical_size.width, physical_size.height);
-                }
-                WindowEvent::CloseRequested => event_loop_window_target.exit(),
-                WindowEvent::RedrawRequested { .. } => {
-                    let size = window.inner_size();
-                    canvas.set_size(size.width, size.height, 1.0);
-                    canvas.clear_rect(0, 0, size.width, size.height, Color::rgbf(0.9, 0.9, 0.9));
-
-                    let max_advance = Some(size.width as f32);
-
-                    let (width, height) = text_canvas.fill_text(
-                        &mut canvas,
-                        0.0,
-                        0.0,
-                        LOREM_TEXT,
-                        &Paint::color(Color::black()),
-                        max_advance,
-                    );
-
-                    text_canvas.fill_text(
-                        &mut canvas,
-                        0.0,
-                        height,
-                        "Hello there",
-                        &Paint::color(Color::black()),
-                        None,
-                    );
-
-                    surface.present(&mut canvas);
-                }
-                _ => (),
-            },
-            Event::AboutToWait => window.request_redraw(),
-
-            _ => (),
-        }
-    })
-    .unwrap();
-}
-
-fn main() {
-    #[cfg(not(target_arch = "wasm32"))]
-    helpers::start(1000, 600, "Text demo", true);
-    #[cfg(target_arch = "wasm32")]
-    helpers::start();
 }
 
 fn render_glyph_run<T: Renderer>(
