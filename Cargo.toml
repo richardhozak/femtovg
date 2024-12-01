@@ -69,8 +69,6 @@ lazy_static = "1.4.0"
 spin_on = "0.1"
 wgpu = { version = "23" }
 parley = { git = "https://github.com/linebender/parley", rev = "17ac2ae3181b2dfd9584e94d086a9106fd036a4d" }
-skrifa = { version = "0.22.3", default-features = false }
-read-fonts = { version = "0.22.3", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 glutin = "0.31.0"
