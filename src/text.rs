@@ -12,7 +12,7 @@ use std::{
 
 use fnv::{FnvBuildHasher, FnvHashMap, FnvHasher};
 use lru::LruCache;
-use parley::{FontContext, Layout, LayoutContext};
+use parley::{Alignment, FontContext, FontStack, Layout, LayoutContext, RangedBuilder, StyleProperty};
 use rustybuzz::ttf_parser;
 use slotmap::{DefaultKey, SlotMap};
 
@@ -191,7 +191,11 @@ struct LayoutId {
 }
 
 impl LayoutId {
-    fn new(font_size: f32, font_weight: FontWeight, font_family: &str, word: &str) -> Self {
+    fn new(settings: &TextSettings, word: &str) -> Self {
+        let font_size = settings.font_size;
+        let font_weight = settings.font_weight;
+        let font_family = &settings.font_family;
+
         let mut hasher = FnvHasher::default();
         word.hash(&mut hasher);
         font_family.hash(&mut hasher);
@@ -332,7 +336,7 @@ pub struct TextContextImpl {
     shaping_run_cache: ShapingRunCache<FnvBuildHasher>,
     shaped_words_cache: ShapedWordsCache<FnvBuildHasher>,
     font_context: FontContext,
-    layout_context: LayoutContext,
+    layout_context: LayoutContext<Color>,
     scale_context: ScaleContext,
     layout_cache: LayoutCache<FnvBuildHasher>,
 }
@@ -523,14 +527,49 @@ impl TextContextImpl {
         x: f32,
         y: f32,
         text: S,
+        max_width: Option<f32>,
         text_settings: &TextSettings,
-    ) -> Result<(), ErrorKind> {
-        let layout_id = LayoutId::new(
-            text_settings.font_size,
-            text_settings.font_weight,
-            &text_settings.font_family,
-            text.as_ref(),
-        );
+    ) -> Result<TextMetrics, ErrorKind> {
+        let text = text.as_ref();
+        let layout_id = LayoutId::new(text_settings, text);
+
+        let layout = self.layout_cache.get_or_insert_mut(layout_id, || {
+            // The display scale for HiDPI rendering
+            let display_scale = 1.0;
+            // Colours for rendering
+            let text_color = Color::rgb(0, 0, 0);
+            // Setup some Parley text styles
+            let brush_style = StyleProperty::Brush(text_color);
+            let font_stack = FontStack::from("system-ui"); // TODO: use text_settings
+            
+            // Create a RangedBuilder
+            let mut builder = self
+                .layout_context
+                .ranged_builder(&mut self.font_context, text, display_scale);
+            
+            // Set default text colour styles (set foreground text color)
+            builder.push_default(brush_style);
+            // Set default font family
+            builder.push_default(font_stack);
+            builder.push_default(StyleProperty::LineHeight(1.3));
+            builder.push_default(StyleProperty::FontSize(16.0));
+            // Build the builder into a Layout
+            // let mut layout: Layout<Color> = builder.build(&text);
+            builder.build(text)
+        });
+
+        // TODO: cache this
+        layout.break_all_lines(max_width);
+        layout.align(max_width, Alignment::Start);
+
+        Ok(TextMetrics {
+            x,
+            y,
+            width: layout.width(),
+            height: layout.height(),
+            glyphs: Vec::new(),
+            final_byte_index: 0,
+        })
     }
 
     pub fn measure_text<S: AsRef<str>>(
