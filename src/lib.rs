@@ -30,8 +30,8 @@ mod error;
 pub use error::ErrorKind;
 
 pub use text::{
-    Align, Atlas, Baseline, DrawCommand, FontId, FontMetrics, GlyphDrawCommands, Quad, RenderMode, TextContext,
-    TextMetrics,
+    Align, Atlas, Baseline, DrawCommand, FontId, FontMetrics, FontWeight, GlyphDrawCommands, Quad, RenderMode,
+    TextContext, TextMetrics,
 };
 
 use text::{GlyphAtlas, TextContextImpl};
@@ -1188,6 +1188,21 @@ where
     }
 
     // Text
+
+    ///
+    pub fn load_font_file<P: AsRef<FilePath>>(&mut self, path: P) -> Result<(), ErrorKind> {
+        self.text_context.borrow_mut().load_font_file(path)
+    }
+
+    ///
+    pub fn load_font_mem(&mut self, data: &[u8]) -> Result<(), ErrorKind> {
+        self.text_context.borrow_mut().load_font_mem(data)
+    }
+
+    ///
+    pub fn load_font_dir<P: AsRef<FilePath>>(&mut self, path: P) -> Result<(), ErrorKind> {
+        self.text_context.borrow_mut().load_font_dir(path)
+    }
 
     /// Adds a font file to the canvas
     pub fn add_font<P: AsRef<FilePath>>(&mut self, file_path: P) -> Result<FontId, ErrorKind> {

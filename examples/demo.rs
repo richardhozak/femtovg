@@ -35,6 +35,16 @@ struct Fonts {
 }
 
 fn run<W: WindowSurface>(mut canvas: Canvas<W::Renderer>, el: EventLoop<()>, mut surface: W, window: Arc<Window>) {
+    canvas
+        .load_font_mem(&resource!("examples/assets/Roboto-Regular.ttf"))
+        .expect("Cannot load font");
+    canvas
+        .load_font_mem(&resource!("examples/assets/Roboto-Light.ttf"))
+        .expect("Cannot load font");
+    canvas
+        .load_font_mem(&&resource!("examples/assets/entypo.ttf"))
+        .expect("Cannot load font");
+
     let fonts = Fonts {
         regular: canvas
             .add_font_mem(&resource!("examples/assets/Roboto-Regular.ttf"))

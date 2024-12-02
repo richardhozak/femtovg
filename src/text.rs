@@ -12,9 +12,11 @@ use std::{
 
 use fnv::{FnvBuildHasher, FnvHashMap, FnvHasher};
 use lru::LruCache;
+use parley::{FontContext, Layout, LayoutContext};
 use rustybuzz::ttf_parser;
 use slotmap::{DefaultKey, SlotMap};
 
+use swash::scale::ScaleContext;
 use unicode_bidi::BidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -29,6 +31,8 @@ pub use atlas::Atlas;
 mod font;
 pub use font::FontMetrics;
 use font::{Font, GlyphRendering};
+
+pub use parley::FontWeight;
 
 // This padding is an empty border around the glyph’s pixels but inside the
 // sampled area (texture coordinates) for the quad in render_atlas().
@@ -179,6 +183,27 @@ impl ShapingId {
     }
 }
 
+#[derive(Copy, Clone, Hash, Eq, PartialEq, PartialOrd, Ord)]
+struct LayoutId {
+    size: u32,
+    weight: u32,
+    hash: u64,
+}
+
+impl LayoutId {
+    fn new(font_size: f32, font_weight: FontWeight, font_family: &str, word: &str) -> Self {
+        let mut hasher = FnvHasher::default();
+        word.hash(&mut hasher);
+        font_family.hash(&mut hasher);
+
+        Self {
+            size: (font_size * 10.0).trunc() as u32,
+            weight: (font_weight.value() * 10.0).trunc() as u32,
+            hash: hasher.finish(),
+        }
+    }
+}
+
 type ShapedWordsCache<H> = LruCache<ShapingId, Result<ShapedWord, ErrorKind>, H>;
 type ShapingRunCache<H> = LruCache<ShapingId, TextMetrics, H>;
 
@@ -206,6 +231,21 @@ pub struct FontTexture {
 pub struct TextContext(pub(crate) Rc<RefCell<TextContextImpl>>);
 
 impl TextContext {
+    ///
+    pub fn load_font_file<T: AsRef<FilePath>>(&mut self, path: T) -> Result<(), ErrorKind> {
+        self.0.borrow_mut().load_font_file(path)
+    }
+
+    ///
+    pub fn load_font_mem(&mut self, data: &[u8]) -> Result<(), ErrorKind> {
+        self.0.borrow_mut().load_font_mem(data)
+    }
+
+    ///
+    pub fn load_font_dir<T: AsRef<FilePath>>(&mut self, path: T) -> Result<(), ErrorKind> {
+        self.0.borrow_mut().load_font_dir(path)
+    }
+
     /// Registers all .ttf files from a directory with this text context. If successful, the
     /// font ids of all registered fonts are returned.
     pub fn add_font_dir<T: AsRef<FilePath>>(&self, path: T) -> Result<Vec<FontId>, ErrorKind> {
@@ -285,16 +325,23 @@ impl TextContext {
     }
 }
 
+type LayoutCache<H> = LruCache<LayoutId, Layout<Color>, H>;
+
 pub struct TextContextImpl {
     fonts: SlotMap<DefaultKey, Font>,
     shaping_run_cache: ShapingRunCache<FnvBuildHasher>,
     shaped_words_cache: ShapedWordsCache<FnvBuildHasher>,
+    font_context: FontContext,
+    layout_context: LayoutContext,
+    scale_context: ScaleContext,
+    layout_cache: LayoutCache<FnvBuildHasher>,
 }
 
 impl Default for TextContextImpl {
     fn default() -> Self {
         let fnv_run = FnvBuildHasher::default();
         let fnv_words = FnvBuildHasher::default();
+        let fnv_layout = FnvBuildHasher::default();
 
         Self {
             fonts: Default::default(),
@@ -305,6 +352,13 @@ impl Default for TextContextImpl {
             shaped_words_cache: LruCache::with_hasher(
                 std::num::NonZeroUsize::new(DEFAULT_LRU_CACHE_CAPACITY).unwrap(),
                 fnv_words,
+            ),
+            font_context: FontContext::new(),
+            layout_context: LayoutContext::new(),
+            scale_context: ScaleContext::new(),
+            layout_cache: LruCache::with_hasher(
+                std::num::NonZeroUsize::new(DEFAULT_LRU_CACHE_CAPACITY).unwrap(),
+                fnv_layout,
             ),
         }
     }
@@ -317,6 +371,39 @@ impl TextContextImpl {
 
     pub fn resize_shaped_words_cache(&mut self, capacity: std::num::NonZeroUsize) {
         self.shaped_words_cache.resize(capacity);
+    }
+
+    pub fn load_font_file<T: AsRef<FilePath>>(&mut self, path: T) -> Result<(), ErrorKind> {
+        let data = std::fs::read(path)?;
+        self.load_font_mem(&data)
+    }
+
+    pub fn load_font_mem(&mut self, data: &[u8]) -> Result<(), ErrorKind> {
+        let result = self.font_context.collection.register_fonts(data.to_owned());
+        if result.len() == 0 {
+            return Err(ErrorKind::NoFontFound);
+        }
+        Ok(())
+    }
+
+    pub fn load_font_dir<T: AsRef<FilePath>>(&mut self, path: T) -> Result<(), ErrorKind> {
+        let path = path.as_ref();
+        if !path.is_dir() {
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                self.add_font_dir(&path)?;
+            } else if matches!(path.extension().and_then(OsStr::to_str), Some("ttf") | Some("ttc")) {
+                self.load_font_file(path)?;
+            }
+        }
+
+        Ok(())
     }
 
     pub fn add_font_dir<T: AsRef<FilePath>>(&mut self, path: T) -> Result<Vec<FontId>, ErrorKind> {
@@ -363,6 +450,8 @@ impl TextContextImpl {
 
     pub fn add_font_mem_with_index(&mut self, data: &[u8], face_index: u32) -> Result<FontId, ErrorKind> {
         self.clear_caches();
+
+        self.font_context.collection.register_fonts(data.to_owned());
 
         let data_copy = data.to_owned();
         let font = Font::new_with_data(data_copy, face_index)?;
@@ -427,6 +516,21 @@ impl TextContextImpl {
 
     fn clear_caches(&mut self) {
         self.shaped_words_cache.clear();
+    }
+
+    pub fn measure_text2<S: AsRef<str>>(
+        &mut self,
+        x: f32,
+        y: f32,
+        text: S,
+        text_settings: &TextSettings,
+    ) -> Result<(), ErrorKind> {
+        let layout_id = LayoutId::new(
+            text_settings.font_size,
+            text_settings.font_weight,
+            &text_settings.font_family,
+            text.as_ref(),
+        );
     }
 
     pub fn measure_text<S: AsRef<str>>(

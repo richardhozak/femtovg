@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use crate::{geometry::Position, Align, Baseline, Color, FillRule, FontId, ImageId, LineCap, LineJoin};
+use crate::{geometry::Position, Align, Baseline, Color, FillRule, FontId, FontWeight, ImageId, LineCap, LineJoin};
 
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -268,6 +268,8 @@ pub struct TextSettings {
     pub(crate) letter_spacing: f32,
     pub(crate) text_baseline: Baseline,
     pub(crate) text_align: Align,
+    pub(crate) font_family: String,
+    pub(crate) font_weight: FontWeight,
 }
 
 impl Default for TextSettings {
@@ -278,6 +280,8 @@ impl Default for TextSettings {
             letter_spacing: 0.0,
             text_baseline: Default::default(),
             text_align: Default::default(),
+            font_family: Default::default(),
+            font_weight: FontWeight::NORMAL,
         }
     }
 }
@@ -765,6 +769,40 @@ impl Paint {
     #[inline]
     pub fn with_font(mut self, font_ids: &[FontId]) -> Self {
         self.set_font(font_ids);
+        self
+    }
+
+    /// Returns the currect font family for text operations
+    pub fn font_family(&self) -> &str {
+        &self.text.font_family
+    }
+
+    /// Sets the font family
+    pub fn set_font_family(&mut self, font_family: String) {
+        self.text.font_family = font_family;
+    }
+
+    /// Returns the paint with font family set to specified value
+    #[inline]
+    pub fn with_font_family(mut self, font_family: String) -> Self {
+        self.set_font_family(font_family);
+        self
+    }
+
+    /// Returns the currect font weight for text operations
+    pub fn font_weight(&self) -> FontWeight {
+        self.text.font_weight
+    }
+
+    /// Sets the font weight
+    pub fn set_font_weight(&mut self, font_weight: FontWeight) {
+        self.text.font_weight = font_weight;
+    }
+
+    /// Returns the paint with font weight set to specified value
+    #[inline]
+    pub fn with_font_weight(mut self, font_weight: FontWeight) -> Self {
+        self.set_font_weight(font_weight);
         self
     }
 
